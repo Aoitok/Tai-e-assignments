@@ -76,37 +76,52 @@ public class InterConstantPropagation extends
 
     @Override
     protected boolean transferCallNode(Stmt stmt, CPFact in, CPFact out) {
-        // TODO - finish me
-        return false;
+        return out.copyFrom(in);
     }
 
     @Override
     protected boolean transferNonCallNode(Stmt stmt, CPFact in, CPFact out) {
-        // TODO - finish me
-        return false;
+        return cp.transferNode(stmt, in, out);
     }
 
     @Override
     protected CPFact transferNormalEdge(NormalEdge<Stmt> edge, CPFact out) {
-        // TODO - finish me
-        return null;
+        return out;
     }
 
     @Override
     protected CPFact transferCallToReturnEdge(CallToReturnEdge<Stmt> edge, CPFact out) {
-        // TODO - finish me
-        return null;
+        CPFact result = out.copy();
+        Stmt invoke = edge.getSource();
+        if (invoke.getDef().isPresent() && invoke.getDef().get() instanceof Var var) {
+            result.remove(var);
+        }
+        return result;
     }
 
     @Override
     protected CPFact transferCallEdge(CallEdge<Stmt> edge, CPFact callSiteOut) {
-        // TODO - finish me
-        return null;
+        CPFact result = newInitialFact();
+        JMethod callee = edge.getCallee();
+        InvokeExp invokeExp = ((Invoke) edge.getSource()).getInvokeExp();
+        for (int i = 0; i < invokeExp.getArgCount(); i++) {
+            Var param = callee.getIR().getParam(i);
+            Var arg = invokeExp.getArg(i);
+            result.update(param, callSiteOut.get(arg));
+        }
+        return result;
     }
 
     @Override
     protected CPFact transferReturnEdge(ReturnEdge<Stmt> edge, CPFact returnOut) {
-        // TODO - finish me
-        return null;
+        CPFact result = newInitialFact();
+        Stmt callSite = edge.getCallSite();
+        if (callSite.getDef().isPresent() &&
+                callSite.getDef().get() instanceof Var var) {
+            for (Var returnVar : edge.getReturnVars()) {
+                result.update(var, cp.meetValue(result.get(var), returnOut.get(returnVar)));
+            }
+        }
+        return result;
     }
 }

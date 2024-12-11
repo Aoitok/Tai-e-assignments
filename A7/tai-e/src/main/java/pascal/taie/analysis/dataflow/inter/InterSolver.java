@@ -46,7 +46,7 @@ class InterSolver<Method, Node, Fact> {
     private Queue<Node> workList;
 
     InterSolver(InterDataflowAnalysis<Node, Fact> analysis,
-                ICFG<Method, Node> icfg) {
+            ICFG<Method, Node> icfg) {
         this.analysis = analysis;
         this.icfg = icfg;
     }
@@ -59,10 +59,38 @@ class InterSolver<Method, Node, Fact> {
     }
 
     private void initialize() {
-        // TODO - finish me
+        for (Node node : icfg) {
+            result.setInFact(node, analysis.newInitialFact());
+            result.setOutFact(node, analysis.newInitialFact());
+        }
+        icfg.entryMethods().forEach(entryMethod -> {
+            Node entry = icfg.getEntryOf(entryMethod);
+            result.setInFact(entry, analysis.newBoundaryFact(entry));
+            result.setOutFact(entry, analysis.newBoundaryFact(entry));
+        });
     }
 
     private void doSolve() {
-        // TODO - finish me
+        workList = new SetQueue<>();
+        workList.addAll(icfg.getNodes());
+        while (!workList.isEmpty()) {
+            Node node = workList.poll();
+            Fact in = result.getInFact(node);
+            icfg.getInEdgesOf(node).forEach(edge -> {
+                Fact out = analysis.transferEdge(edge, result.getOutFact(edge.getSource()));
+                analysis.meetInto(out, in);
+            });
+            if (analysis.transferNode(node, in, result.getOutFact(node))) {
+                workList.addAll(icfg.getSuccsOf(node));
+            }
+        }
+    }
+
+    public DataflowResult<Node, Fact> getDataflowResult() {
+        return result;
+    }
+
+    public void updateWorkList(Node node) {
+        workList.add(node);
     }
 }

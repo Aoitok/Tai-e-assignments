@@ -27,8 +27,21 @@ import org.apache.logging.log4j.Logger;
 import pascal.taie.World;
 import pascal.taie.analysis.pta.PointerAnalysisResult;
 import pascal.taie.analysis.pta.core.cs.context.Context;
+import pascal.taie.analysis.pta.core.cs.element.CSCallSite;
 import pascal.taie.analysis.pta.core.cs.element.CSManager;
+import pascal.taie.analysis.pta.core.cs.element.CSObj;
+import pascal.taie.analysis.pta.core.cs.element.CSVar;
+import pascal.taie.analysis.pta.core.cs.element.Pointer;
+import pascal.taie.analysis.pta.core.heap.Obj;
 import pascal.taie.analysis.pta.cs.Solver;
+import pascal.taie.analysis.pta.pts.PointsToSet;
+import pascal.taie.analysis.pta.pts.PointsToSetFactory;
+import pascal.taie.ir.exp.Var;
+import pascal.taie.ir.stmt.Invoke;
+import pascal.taie.language.classes.JMethod;
+import pascal.taie.language.type.Type;
+import pascal.taie.util.collection.Maps;
+import pascal.taie.util.collection.MultiMap;
 
 import java.util.Map;
 import java.util.Set;
@@ -48,6 +61,27 @@ public class TaintAnalysiss {
 
     private final Context emptyContext;
 
+    private final MultiMap<JMethod, Sink> toSinks = Maps.newMultiMap();
+
+    private final MultiMap<JMethod, TaintTransfer> toTransfers = Maps.newMultiMap();
+
+    private final MultiMap<JMethod, Type> toSourceTypes = Maps.newMultiMap();
+
+    private final TaintFlowGraph taintFlowGraph = new TaintFlowGraph();
+
+    private final class TaintFlowGraph {
+
+        private final MultiMap<Pointer, Pointer> successors = Maps.newMultiMap();
+
+        boolean addEdge(Pointer source, Pointer target) {
+            return successors.put(source, target);
+        }
+
+        Set<Pointer> getSuccsOf(Pointer pointer) {
+            return successors.get(pointer);
+        }
+    }
+
     public TaintAnalysiss(Solver solver) {
         manager = new TaintManager();
         this.solver = solver;
@@ -58,9 +92,65 @@ public class TaintAnalysiss {
                 World.get().getClassHierarchy(),
                 World.get().getTypeSystem());
         logger.info(config);
+
+        config.getSinks().forEach(sink -> {
+            toSinks.put(sink.method(), sink);
+        });
+        config.getTransfers().forEach(transfer -> {
+            toTransfers.put(transfer.method(), transfer);
+        });
+        config.getSources().forEach(source -> {
+            toSourceTypes.put(source.method(), source.type());
+        });
     }
 
-    // TODO - finish me
+    private void addTFGEdge(Pointer source, Pointer target, Type taintType) {
+        if (taintFlowGraph.addEdge(source, target)) {
+            PointsToSet pts = PointsToSetFactory.make();
+            for (CSObj csObj : source.getPointsToSet()) {
+                if (isTaint(csObj.getObject())) {
+                    pts.addObject(makeTaint(manager.getSourceCall(csObj.getObject()), taintType));
+                }
+            }
+            if (!pts.isEmpty()) {
+                solver.updateWorkList(target, pts);
+            }
+        }
+    }
+
+    public Set<Pointer> getSuccsOfTFG(Pointer pointer) {
+        return taintFlowGraph.getSuccsOf(pointer);
+    }
+
+    public CSObj makeTaint(Invoke source, Type type) {
+        return csManager.getCSObj(emptyContext, manager.makeTaint(source, type));
+    }
+
+    public boolean isTaint(Obj obj) {
+        return manager.isTaint(obj);
+    }
+
+    public boolean isSource(JMethod method, Type type) {
+        return toSourceTypes.contains(method, type);
+    }
+
+    public void transferTaint(JMethod callee, Invoke callSite, Context context, CSVar base) {
+        for (TaintTransfer transfer : toTransfers.get(callee)) {
+            int from = transfer.from();
+            int to = transfer.to();
+            Type type = transfer.type();
+            if (from >= 0 && to == TaintTransfer.RESULT && callSite.getDef().isPresent()
+                    && callSite.getDef().get() instanceof Var var) {
+                addTFGEdge(csManager.getCSVar(context, callSite.getInvokeExp().getArg(from)),
+                        csManager.getCSVar(context, var), type);
+            } else if (base != null && from == TaintTransfer.BASE && callSite.getDef().isPresent()
+                    && callSite.getDef().get() instanceof Var var) {
+                addTFGEdge(base, csManager.getCSVar(context, var), type);
+            } else if (base != null && to == TaintTransfer.BASE) {
+                addTFGEdge(csManager.getCSVar(context, callSite.getInvokeExp().getArg(from)), base, type);
+            }
+        }
+    }
 
     public void onFinish() {
         Set<TaintFlow> taintFlows = collectTaintFlows();
@@ -70,8 +160,25 @@ public class TaintAnalysiss {
     private Set<TaintFlow> collectTaintFlows() {
         Set<TaintFlow> taintFlows = new TreeSet<>();
         PointerAnalysisResult result = solver.getResult();
-        // TODO - finish me
         // You could query pointer analysis results you need via variable result.
+        result.getCSCallGraph().edges().forEach(edge -> {
+            CSCallSite csCallSite = edge.getCallSite();
+            Invoke callSite = csCallSite.getCallSite();
+            JMethod callee = edge.getCallee().getMethod();
+            // Subsignature subsignature = callee.getSubsignature();
+            for (Sink sink : toSinks.get(callee)) {
+                int index = sink.index();
+                Var var = callSite.getInvokeExp().getArg(index);
+                CSVar csVar = csManager.getCSVar(csCallSite.getContext(), var);
+                for (CSObj csObj : result.getPointsToSet(csVar)) {
+                    Obj obj = csObj.getObject();
+                    if (manager.isTaint(obj)) {
+                        taintFlows.add(new TaintFlow(manager.getSourceCall(obj), callSite, index));
+                    }
+                }
+            }
+
+        });
         return taintFlows;
     }
 }

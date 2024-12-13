@@ -249,7 +249,6 @@ class Solver {
                     processCall(csVar, csObj);
                 }
             }
-
         }
     }
 
